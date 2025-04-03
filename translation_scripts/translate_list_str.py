@@ -128,8 +128,8 @@ if __name__ == "__main__":
     parser.add_argument('--output-dir', type=str, required=True, help="Path to the output file")
     parser.add_argument('--max-samples', type=int, default=None, help="Only take top n rows")
     parser.add_argument('--translate-col', nargs='+', help='The name of the column to translate', required=True)
+    parser.add_argument('--src_lang', type=str, default='en', help='The source language, required=True')
     args = parser.parse_args()
-
 
     print("Translating colums", args.translate_col)
     
@@ -160,6 +160,7 @@ if __name__ == "__main__":
         df = pd.read_csv(args.source_file, sep='\t')
     else:
         print('Currently only supporting jsonl, tsv, csv, tsv and parquet')
+        sys.exit(1)
 
     if args.max_samples:
         df = df.head(args.max_samples)
