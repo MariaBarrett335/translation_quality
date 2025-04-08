@@ -40,7 +40,7 @@ def call_litellm(prompt, model="gpt-4o", max_tokens=1000, temperature=0.0):
             max_completion_tokens=max_tokens,
             temperature=temperature
         )
-        return response
+        return response['choices'][0]['message']['content']
     except Exception as e:
         sys.exit(e)
 
@@ -62,7 +62,7 @@ def translate_opus(text: str, tokenizer, model) -> str:
     
     # Decode the generated tokens
     translated_text = tokenizer.decode(translated[0], skip_special_tokens=True)
-    
+
     return translated_text
 
 def get_lang_code_dict(value:str) -> dict:
@@ -128,17 +128,17 @@ if __name__ == "__main__":
     parser.add_argument('--output-dir', type=str, required=True, help="Path to the output file")
     parser.add_argument('--max-samples', type=int, default=None, help="Only take top n rows")
     parser.add_argument('--translate-col', nargs='+', help='The name of the column to translate', required=True)
-    parser.add_argument('--src_lang', type=str, default='en', help='The source language, required=True')
+    parser.add_argument('--src-lang', type=str, default='en', help='The source language, required=True')
     args = parser.parse_args()
 
     print("Translating colums", args.translate_col)
     
-    src_lang = 'en'
-    src_lang_name = Lang(src_lang).name
+    
+    src_lang_name = Lang(args.src_lang).name
     tgt_lang_name = Lang(args.tgt_lang).name
 
     # Load the model and tokenizer
-    model_name = f'Helsinki-NLP/opus-mt-{src_lang}-{args.tgt_lang}'
+    model_name = f'Helsinki-NLP/opus-mt-{args.src_lang}-{args.tgt_lang}'
 
     output_file = os.path.join(args.output_dir, f"{args.tgt_lang}.jsonl")
 
@@ -187,14 +187,14 @@ if __name__ == "__main__":
     else:
         for col in args.translate_col:
             df.loc[:, f'{col}_mt-translated'] = df[col].progress_map(
-            lambda x: [call_litellm(create_translation_prompt(source_sentence=item, target_lang=src_lang_name)) for item in x] 
+            lambda x: [call_litellm(create_translation_prompt(source_sentence=item, target_lang=tgt_lang_name)) for item in x] 
                     if isinstance(x, list) 
                     else call_litellm(create_translation_prompt(source_sentence=x, target_lang=tgt_lang_name))
         )
 
                                                       
     #rename the english question column
-    df.rename(columns={col: f'{col}_{src_lang}'}, inplace=True)
+    df.rename(columns={col: f'{col}_{args.src_lang}'}, inplace=True)
     
     df.to_json(output_file, orient='records', lines=True, force_ascii=False)
 
