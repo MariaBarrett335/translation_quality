@@ -30,6 +30,25 @@ from sklearn.metrics import confusion_matrix
 from bs4 import BeautifulSoup
 import json
 from collections import Counter
+from scipy.stats import rankdata
+
+def scores_to_ranks_dict(scores):
+    """
+    Convert a list of scores to a dictionary mapping scores to ranks.
+    
+    Higher scores get lower ranks (1 is best).
+    Equal scores get the same rank.
+    
+    Args:
+        scores: List of numerical scores
+        
+    Returns:
+        Dictionary mapping scores to their corresponding ranks
+    """
+    unique_scores = sorted(set(scores), reverse=True)  # Sort in descending order
+    rank_dict = {score: int(rank) for rank, score in enumerate(unique_scores, 1)}
+    return rank_dict
+
 
 def run_rating(translation:str, correction:str, rating_prompt_func, model='gpt-4o', cot=False, repeat=3, max_completion_tokens=200):
     trans = 0
@@ -103,6 +122,12 @@ def check_api_key():
   if not api_key:
     print("Please set the GEMINI_API_KEY environment variable with the API key.")
     sys.exit(1)
+
+def create_minimal_rating_prompt(candidate_A:str, candidate_B:str):
+    prompt = f"""A: {candidate_A}
+    B: {candidate_B}
+    """
+    return prompt
 
 
 def gemini_chat(prompt: str, model="gemini/gemini-2.0-flash", max_completion_tokens=200) -> str:
