@@ -186,3 +186,152 @@ def add_rating_prompt_column(df, sentence_col, corrected_col):
     df['backtranslated_is_A'] = original_is_A
     
     return df
+
+def create_rating_prompt(candidate_A:str, candidate_B:str, cot=False):
+
+    prompt = f"""Here are two sentences. One is more fluent than the other. Select the candidate that appears more fluent to a native Danish speaker. Do not focus on the helpfulness or the content of the text, only its use of language.
+    Return only the letter of the candidate, i.e. A or B. Say nothing else.
+    A: {candidate_A}
+    B: {candidate_B}
+    """
+
+    prompt_cot = f"""Here are two sentences. One is more fluent than the other. Select the candidate that appears more fluent to a native Danish speaker. Do not focus on the helpfulness or the content of the text, only its use of language.
+    Return the fluency evaluation of each candidate between these tags <candidate_a_fluency_rating> </candidate_a_fluency_rating> and <candidate_b_fluency_rating> </candidate_b_fluency_rating>. Return the letter of the most fluent candidate, i.e. A or B between these tags: <winner></winner>.
+    In case of the same number of points, select the candidate with the less severe errors as the winner.
+    The fluency rating should be according to this rubric:
+    
+    1 Point: Minimal Fluency
+
+    Grammar: Technically grammatical but with pervasive errors in most areas (gender, number, tense, etc.)
+    Vocabulary: Very basic vocabulary with significant repetition and many direct translations
+    Pronunciation/Flow: Text is choppy and disconnected, would sound extremely unnatural to native speakers
+    Sentence Structure: Almost exclusively simple or fragmented sentences arranged in an unnatural sequence
+    Idioms: No awareness of Danish cultural context in language use
+
+    2 Points: Basic Fluency
+
+    Grammar: Frequent grammatical errors in article use, and verb tenses, though main meaning is understandable
+    Vocabulary: Limited vocabulary with repetition and occasional use of non-Danish words or direct translations
+    Pronunciation/Flow: Text reads with a distinctly non-Danish cadence and would sound unnatural when read aloud
+    Sentence Structure: Predominantly simple sentences with awkward attempts at complexity
+    Idioms: Minimal awareness of Danish idioms and verbal phrases
+
+    3 Points: Intermediate Fluency
+
+    Grammar: Some noticeable grammatical errors, particularly with complex structures, but meaning remains clear
+    Vocabulary: Adequate vocabulary for most situations, but limited idiomatic expressions and some repetition
+    Pronunciation/Flow: Text has a somewhat unnatural rhythm that would be noticeable to native speakers
+    Sentence Structure: Mix of simple and complex sentences, but reliance on certain patterns
+    Idioms: Some awareness of Danish idioms and verbal phrases, but still some errors that are directly translated from English, e.g., 'jeg bryder problemet ned'
+
+    4 Points: Advanced Fluency
+
+    Grammar: Very few minor grammatical errors that wouldn't distract a native speaker
+    Vocabulary: Broad vocabulary with good use of idioms, though occasional imprecise word choice
+    Pronunciation/Flow: Text flows naturally with only occasional awkward phrasing
+    Sentence Structure: Good variety of complex sentence structures with minor awkwardness
+    Idioms: Generally appropriate use of Danish idioms and verbal phrases with occasional slight misuse
+
+    5 Points: Native-Like Fluency
+
+    Grammar: Perfect grammatical control with no errors in noun gender, verb conjugation, or word order
+    Vocabulary: Rich, precise, and idiomatic vocabulary with proper use of Danish expressions and colloquialisms
+    Flow: Text has a natural rhythm that would sound completely authentic when read aloud
+    Sentence Structure: Varied and complex sentence structures used appropriately and effortlessly
+    Idioms: Appropriate use of Danish idioms, verbal phraess, and Danish-specific expressions.
+    
+    A: {candidate_A}
+    B: {candidate_B}
+    """
+
+    if cot ==False:
+        return prompt
+    else: 
+        return prompt_cot
+
+def create_minimal_rating_prompt(candidate_A:str, candidate_B:str):
+    prompt = f"""A: {candidate_A}
+    B: {candidate_B}
+    """
+    return prompt
+
+def create_batch_prompt(dict_of_prompts: dict, cot=False):
+    # Create a properly formatted string representation of the dictionary
+    dict_as_string = str({k: v for k, v in dict_of_prompts.items()})
+    
+    prompt = f"""Below you will see a dictionary of indices and prompts. For each index, select the candidate that appears more fluent to a native Danish speaker. Do not focus on the helpfulness, or the content of the text, only its use of language.
+    Punish the candidate that contains anglicisms, ungrammaticality, translationese, or other non-native language features.
+    For each index, return only the letter of the candidate, i.e. A or B. Say nothing else.
+    Return a dictionary like this: {{0: 'A', 1: 'B', 2: 'A', ...}}
+    {dict_as_string}
+    """
+
+    prompt_cot = f"""Below you will see a dictionary of indices and prompts. For each index, select the candidate that appears more fluent to a native Danish speaker. Do not focus on the helpfulness, or the content of the text, only its use of language.
+    Punish the candidate that contains anglicisms, ungrammaticality, translationese, or other non-native language features.
+    For each index, return the letter of the candidate, i.e. A or B, as well as the reason for the choice.
+    Return a dictionary like this:
+    {{
+    0: {{'winner': 'A', 'reason': 'Candidate B contains an anglicism in the form of non standard verb-particle construction ('tjekke ned')'}},
+    1: {{'winner': 'B', 'reason': 'Candidate A contains a non-standard Danish word: (radioactive)'}},
+    ...
+    }}
+    {dict_as_string}
+    """
+    if cot:
+        return prompt_cot
+    else:
+        return prompt
+
+def create_prompt_rating(text:str):
+    prompt=f"""Grade the following sentence according to this grading rubric. 
+    <sentence>{text}</sentence>
+    
+    **Criterion **
+    Danish Language Fluency Grading Rubric
+
+    1 Point: Minimal Fluency
+
+    Grammar: Technically grammatical but with pervasive errors in most areas (gender, number, tense, etc.)
+    Vocabulary: Very basic vocabulary with significant repetition and many direct translations
+    Pronunciation/Flow: Text is choppy and disconnected, would sound extremely unnatural to native speakers
+    Sentence Structure: Almost exclusively simple or fragmented sentences arranged in an unnatural sequence
+    Idioms: No awareness of Danish cultural context in language use
+
+    2 Points: Basic Fluency
+
+    Grammar: Frequent grammatical errors in article use, and verb tenses, though main meaning is understandable
+    Vocabulary: Limited vocabulary with repetition and occasional use of non-Danish words or direct translations
+    Pronunciation/Flow: Text reads with a distinctly non-Danish cadence and would sound unnatural when read aloud
+    Sentence Structure: Predominantly simple sentences with awkward attempts at complexity
+    Idioms: Minimal awareness of Danish idioms and verbal phrases
+
+    3 Points: Intermediate Fluency
+
+    Grammar: Some noticeable grammatical errors, particularly with complex structures, but meaning remains clear
+    Vocabulary: Adequate vocabulary for most situations, but limited idiomatic expressions and some repetition
+    Pronunciation/Flow: Text has a somewhat unnatural rhythm that would be noticeable to native speakers
+    Sentence Structure: Mix of simple and complex sentences, but reliance on certain patterns
+    Idioms: Some awareness of Danish idioms and verbal phrases, but still some errors that are directly translated from English, e.g., 'jeg bryder problemet ned'
+
+    4 Points: Advanced Fluency
+
+    Grammar: Very few minor grammatical errors that wouldn't distract a native speaker
+    Vocabulary: Broad vocabulary with good use of idioms, though occasional imprecise word choice
+    Pronunciation/Flow: Text flows naturally with only occasional awkward phrasing
+    Sentence Structure: Good variety of complex sentence structures with minor awkwardness
+    Idioms: Generally appropriate use of Danish idioms and verbal phrases with occasional slight misuse
+
+    5 Points: Native-Like Fluency
+
+    Grammar: Perfect grammatical control with no errors in noun gender, verb conjugation, or word order
+    Vocabulary: Rich, precise, and idiomatic vocabulary with proper use of Danish expressions and colloquialisms
+    Flow: Text has a natural rhythm that would sound completely authentic when read aloud
+    Sentence Structure: Varied and complex sentence structures used appropriately and effortlessly
+    Idioms: Appropriate use of Danish idioms, verbal phraess, and Danish-specific expressions.
+
+    ** Format 
+    List all errors between the tags <reason> </reason>. In case of no fluency errors, write 'None' between the tags.
+    Give your score (1-5) between the tags <score> </score>
+    """
+
+    return prompt
