@@ -49,8 +49,76 @@ def scores_to_ranks_dict(scores):
     rank_dict = {score: int(rank) for rank, score in enumerate(unique_scores, 1)}
     return rank_dict
 
-
-def run_rating(translation:str, correction:str, rating_prompt_func, model='gpt-4o', cot=False, repeat=3, max_completion_tokens=200):
+def get_response(prompt, model, max_completion_tokens=200, pipe=None):
+    """
+    Get response from a model that is not GPT or Gemini (typically HuggingFace models).
+    
+    Args:
+        prompt (str): The prompt to send to the model
+        model (str): The model name or path
+        max_completion_tokens (int): Maximum number of tokens to generate
+        pipe (callable, optional): A custom function to handle the generation
+        
+    Returns:
+        str: The model's response
+    """
+    # If a custom pipe function is provided, use it
+    if pipe is not None:
+        return pipe(prompt, model, max_completion_tokens)
+    
+    # Otherwise, try to use transformers pipeline
+    try:
+        from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+        import torch
+        
+        # Load tokenizer and model
+        tokenizer = AutoTokenizer.from_pretrained(model)
+        model_instance = AutoModelForCausalLM.from_pretrained(
+            model,
+            torch_dtype=torch.bfloat16,
+            device_map="auto"
+        )
+        
+        # Create messages for the chat format
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant for assessing translations."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        # Check if the tokenizer has a chat template
+        try:
+            # Try using the tokenizer's chat template
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        except (AttributeError, ValueError) as e:
+            # If no chat template exists, create a simple formatted prompt manually
+            print(f"Warning: Tokenizer doesn't have a chat template. Using default format. Error: {e}")
+            formatted_prompt = f"<s>[INST] <<SYS>>\nYou are a helpful assistant for assessing translations.\n<</SYS>>\n\n{prompt} [/INST]"
+        
+        # Tokenize the prompt
+        inputs = tokenizer(formatted_prompt, return_tensors="pt").to(model_instance.device)
+        
+        # Generate the response
+        with torch.no_grad():
+            output = model_instance.generate(
+                **inputs,
+                max_new_tokens=max_completion_tokens,
+                do_sample=True,
+                temperature=0.1
+            )
+        
+        # Decode the response, skipping the prompt
+        response = tokenizer.decode(output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+        return response.strip()
+        
+    except Exception as e:
+        print(f"Error in get_response: {e}")
+        return f"Error generating response: {str(e)}"
+    
+def run_rating(translation:str, correction:str, rating_prompt_func, model='gpt-4o', cot=False, repeat=3, max_completion_tokens=200, pipe=None):
     trans = 0
     corr = 0
     for i in range(repeat):
@@ -58,10 +126,13 @@ def run_rating(translation:str, correction:str, rating_prompt_func, model='gpt-4
             response = gemini_chat(rating_prompt_func(candidate_A=translation, candidate_B=correction, cot=cot), model=model, max_completion_tokens=max_completion_tokens)
         elif 'gpt' in model:
             response = call_litellm(rating_prompt_func(candidate_A=translation, candidate_B=correction, cot=cot), model=model, max_completion_tokens=max_completion_tokens)
+        else:
+            response = get_response(rating_prompt_func(candidate_A=translation, candidate_B=correction, cot=cot), model=model, max_completion_tokens=max_completion_tokens)
         if cot and BeautifulSoup(response, 'html.parser').find('winner'):
             response = BeautifulSoup(response, 'html.parser').find('winner').text
 
         response = response.strip().lower()
+        print(response)
         if response == 'a':
             trans += 1
         elif response == 'b':
@@ -70,12 +141,14 @@ def run_rating(translation:str, correction:str, rating_prompt_func, model='gpt-4
             trans += 0.5
             corr += 0.5
         else:
-            print(response)
+            print('response', response)
         
         if 'gemini' in model:
              response = gemini_chat(rating_prompt_func(candidate_A=correction, candidate_B=translation, cot=cot), model=model, max_completion_tokens=max_completion_tokens)
         elif 'gpt' in model:
             response = call_litellm(rating_prompt_func(candidate_A=correction, candidate_B=translation, cot=cot), model=model, max_completion_tokens=max_completion_tokens)
+        else:
+            response = get_response(rating_prompt_func(candidate_A=correction, candidate_B=translation, cot=cot), model=model, max_completion_tokens=max_completion_tokens)
         if cot and BeautifulSoup(response, 'html.parser').find('winner'):
             response = BeautifulSoup(response, 'html.parser').find('winner').text
             
@@ -89,8 +162,31 @@ def run_rating(translation:str, correction:str, rating_prompt_func, model='gpt-4
             trans += 0.5
             corr += 0.5
         else:
-            print(response)
+            print('response', response)
     return(corr/(repeat*2))
+
+def create_edit_prompt(translation, cot=False):
+
+    # Construct prompt
+    prompt_no_cot = f"""
+    Edit this sentence such that it becomes fluent to a native speaker. Make all the necessary edits, but nothing more than that.
+    Return the edited sentence between these tags: <edited_sentence> </edited_sentence>
+    <original_sentence>{translation}</original_sentence>
+    """
+    
+    prompt_cot = f"""
+    List all the spans that are not fully fluent to a native speaker, whether it be lexical, grammatical, idiomatic, or cultural knowledge errors between these tags: <dysfluent_span> </dysfluent_span>
+    Edit this sentence such that it becomes fluent to a native speaker. Make all the necessary edits, but nothing more than that.
+    Return the edited sentence between these tags <edited_sentence> </edited_sentence>
+    <original_sentence>{translation}</original_sentence>
+    """
+    if cot:
+        prompt = prompt_cot
+    else:
+        prompt = prompt_no_cot
+    
+    return prompt
+    
 
 
 
@@ -187,7 +283,7 @@ def add_rating_prompt_column(df, sentence_col, corrected_col):
     
     return df
 
-def create_rating_prompt(candidate_A:str, candidate_B:str, cot=False):
+def create_ranking_prompt(candidate_A:str, candidate_B:str, cot=False):
 
     prompt = f"""Here are two sentences. One is more fluent than the other. Select the candidate that appears more fluent to a native Danish speaker. Do not focus on the helpfulness or the content of the text, only its use of language.
     Return only the letter of the candidate, i.e. A or B. Say nothing else.
