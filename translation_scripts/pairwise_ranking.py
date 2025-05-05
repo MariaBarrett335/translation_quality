@@ -19,8 +19,9 @@ def parse_arguments():
                         default="meta-llama/Llama-3.2-3B-Instruct",
                         help='Model to use for ratings (default: meta-llama/Llama-3.2-3B-Instruct)')
     
-    parser.add_argument('--cot', action='store_true',
-                        help='Use chain-of-thought reasoning (default: False)')
+    parser.add_argument('--cot', type=lambda x: x.lower() in ['true', '1', 'yes', 'y'], 
+                        default=False,
+                        help='Use chain-of-thought reasoning (default: False). Set to True/False.')
     
     parser.add_argument('--input_file', type=str,
                         default="/scratch/project_462000353/maribarr/translation_quality/data/Flores200_dev.csv",
@@ -36,7 +37,7 @@ def parse_arguments():
                         help='Number of comparison repeats (default: 1)')
     
     parser.add_argument('--batch_size', type=int, default=10,
-                        help='Number of examples to process before saving results (default: 10)'), 
+                        help='Number of examples to process before saving results (default: 10)')
     
     parser.add_argument('--task', type=str, default='rank_vs_edited', 
                         help='score, edit or rank_vs_edited')
@@ -81,13 +82,11 @@ def get_model_response(prompt, model, tokenizer, max_new_tokens=1000):
     response = tokenizer.decode(output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
     return response
 
-def process_batch(batch_df, model, tokenizer, args):
+def process_batch(batch_df, model, tokenizer, args, result_column):
     """Process a batch of examples"""
     # Create a custom get_response function to pass to run_rating
     def custom_get_response(prompt, model_name, max_completion_tokens, pipe=None):
         return get_model_response(prompt, model, tokenizer, max_completion_tokens)
-    
-    result_column = f"{os.path.basename(args.model).replace('/', '_')}_{'cot' if args.cot else 'pairwise'}"
     
     # Process each row in the batch
     results = []
@@ -105,7 +104,7 @@ def process_batch(batch_df, model, tokenizer, args):
                 pipe=custom_get_response,  # Override the pipeline with our custom function
                 repeat=args.repeat
             )
-        elif args.task == 'edit':
+        elif args.task == 'score':
             prompt = create_prompt_rating(row['translations'])
             result = get_model_response(
                 prompt=prompt,
@@ -113,7 +112,7 @@ def process_batch(batch_df, model, tokenizer, args):
                 tokenizer=tokenizer,
                 max_new_tokens=args.max_tokens
             )
-        elif args.task == 'score':
+        elif args.task == 'edit':
             prompt = create_edit_prompt(row['translations'])
             result = get_model_response(
                 prompt=prompt,
@@ -121,6 +120,9 @@ def process_batch(batch_df, model, tokenizer, args):
                 tokenizer=tokenizer,
                 max_new_tokens=args.max_tokens
             )
+        else:
+            print(f"Error: Invalid task '{args.task}'. Choose either: score, edit, or rank_vs_edited")
+            sys.exit(1)  # Exit with error code 1 to indicate failure
 
         results.append(result)
     
@@ -137,7 +139,8 @@ def main():
     df = pd.read_csv(args.input_file)
     
     # Initialize result column
-    result_column = f"{os.path.basename(args.model).replace('/', '_')}_{'cot' if args.cot else 'pairwise'}"
+
+    result_column = "open_model_task_col"
     df[result_column] = None
     
     # Load model and tokenizer using AutoModel - only once
@@ -181,13 +184,13 @@ def main():
             batch_df = df.loc[batch_indices].copy()
             
             # Process the batch
-            processed_batch = process_batch(batch_df, model, tokenizer, args)
+            processed_batch = process_batch(batch_df, model, tokenizer, args, result_column)
             
             # Update the main dataframe with the results
             df.loc[batch_indices, result_column] = processed_batch[result_column]
             
             # Save intermediate results
-            df.to_csv(args.output_file, index=False)
+            df.to_json(args.output_file, lines=True, orient='records')
             
             # Update progress bar
             pbar.update(len(batch_indices))
@@ -207,3 +210,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    del model
+    torch.cuda.empty_cache() 

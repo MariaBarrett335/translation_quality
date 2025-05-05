@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1     # 8 MPI ranks per node, 128 total (16x8)
 #SBATCH --gpus-per-node=4
 #SBATCH --mem=256G 
-#SBATCH --time=09:00:00       # Run time (d-hh:mm:ss) # 4 hours for everything
+#SBATCH --time=04:00:00       # Run time (d-hh:mm:ss) # 4 hours for everything
 #SBATCH --account=project_462000615  # Project for billing
 
 module use /appl/local/csc/modulefiles/
@@ -36,19 +36,30 @@ mkdir -p $OUTPUT_DIR
 
 MODELS=("/scratch/project_462000353/zosaelai2/models/viking-33b-synthetic-magpie-oasst2-epochs-2-batch-128-packed" "google/gemma-3-27b-it" "meta-llama/Llama-3.3-70B-Instruct" "utter-project/EuroLLM-9B-Instruct")
 INPUT_FILE="/scratch/project_462000353/maribarr/translation_quality/data/Flores200_dev.csv"
-TASK="score"
-export SSL_CERT_FILE="" # litellm does not run with this environment variable set. The value was /etc/ssl/ca-bundle.pem I restore it immediately after running the script
+TASK="edit" # rank_vs_edited edit score
+COT="False"
 
+
+export SSL_CERT_FILE="" # litellm does not run with this environment variable set. The value was /etc/ssl/ca-bundle.pem I restore it immediately after running the script
+cot_lower=$(echo "$COT" | tr '[:upper:]' '[:lower:]')
 
 for MODEL in "${MODELS[@]}"; do
     # Extract the model name correctly using command substitution
     MODEL_NAME=$(echo $MODEL | rev | cut -d/ -f1 | rev)
 
+    # Add _cot to the filename only if COT is enabled
+    if [[ "$cot_lower" == "true" || "$cot_lower" == "1" || "$cot_lower" == "yes" || "$cot_lower" == "y" ]]; then
+        OUTPUT_SUFFIX="_${TASK}_cot.jsonl"
+    else
+        OUTPUT_SUFFIX="_${TASK}.jsonl"
+    fi
+
     python translation_scripts/pairwise_ranking.py --model $MODEL \
+                                                --cot $COT \
                                                 --input_file $INPUT_FILE \
-                                                --output_file ${OUTPUT_DIR}/${MODEL_NAME}_${TASK}.jsonl \
+                                                --output_file "${OUTPUT_DIR}/${MODEL_NAME}${OUTPUT_SUFFIX}" \
                                                 --max_tokens 1000 \
-                                                --repeat 3 \
+                                                --repeat 1 \
                                                 --task $TASK # rank_vs_edited edit score
 
 done
