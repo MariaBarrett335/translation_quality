@@ -378,7 +378,7 @@ def create_batch_prompt(dict_of_prompts: dict, cot=False):
     else:
         return prompt
 
-def create_prompt_rating(text:str):
+def create_prompt_rating(text:str, cot=False):
     prompt=f"""Grade the following sentence according to this grading rubric. 
     <sentence>{text}</sentence>
     
@@ -429,5 +429,11 @@ def create_prompt_rating(text:str):
     List all errors between the tags <reason> </reason>. In case of no fluency errors, write 'None' between the tags.
     Give your score (1-5) between the tags <score> </score>
     """
-
+    cot_addendum = f"""
+     List all the spans that are not fully fluent to a native speaker, whether it be lexical, grammatical, idiomatic, or cultural knowledge errors between these tags: <dysfluent_span> </dysfluent_span>
+    """
+    if cot:
+        prompt += cot_addendum
+    else:
+        prompt
     return prompt

@@ -105,7 +105,7 @@ def process_batch(batch_df, model, tokenizer, args, result_column):
                 repeat=args.repeat
             )
         elif args.task == 'score':
-            prompt = create_prompt_rating(row['translations'])
+            prompt = create_prompt_rating(row['translations'], cot=args.cot)
             result = get_model_response(
                 prompt=prompt,
                 model=model,
@@ -113,7 +113,7 @@ def process_batch(batch_df, model, tokenizer, args, result_column):
                 max_new_tokens=args.max_tokens
             )
         elif args.task == 'edit':
-            prompt = create_edit_prompt(row['translations'])
+            prompt = create_edit_prompt(row['translations'], cot=args.cot)
             result = get_model_response(
                 prompt=prompt,
                 model=model,
