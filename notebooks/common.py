@@ -32,6 +32,28 @@ import json
 from collections import Counter
 from scipy.stats import rankdata
 import itertools
+from openai import OpenAI
+
+def openai_get_response(prompt, model, max_completion_tokens=1000, api_key=None):
+    client = OpenAI(
+      base_url="https://openrouter.ai/api/v1",
+      api_key=api_key)
+
+    completion = client.chat.completions.create(
+      extra_headers={
+        #"HTTP-Referer": "<YOUR_SITE_URL>", # Optional. Site URL for rankings on openrouter.ai.
+        #"X-Title": "<YOUR_SITE_NAME>", # Optional. Site title for rankings on openrouter.ai.
+      },
+      extra_body={},
+      model=model,
+      messages=[
+        {
+          "role": "user",
+          "content": prompt
+        }
+      ]
+    )
+    return completion.choices[0].message.content
 
 def create_ranking_prompt(candidate_A:str, candidate_B:str, cot=False):
 
@@ -117,6 +139,8 @@ def compare_sentences_by_quality(df, id_column, sentence_column, score_column, m
     results = {}
     all_ratings = []
     
+
+
     # Group by ID (source sentence)
     for group_id, group_df in tqdm(df.groupby(id_column), desc="Processing sentence groups"):
         # Initialize counters for this group
@@ -205,7 +229,7 @@ def scores_to_ranks_dict(scores):
     rank_dict = {score: int(rank) for rank, score in enumerate(unique_scores, 1)}
     return rank_dict
 
-def get_response(prompt, model, max_completion_tokens=200, tokenizer=None, pipe=None):
+def get_response(prompt, model, max_completion_tokens=200, tokenizer=None, pipe=None, deepseek=False):
     """
     Get response from a model that is not GPT or Gemini (typically HuggingFace models).
     
@@ -239,7 +263,9 @@ def get_response(prompt, model, max_completion_tokens=200, tokenizer=None, pipe=
             )
             
             # Now we can use the newly loaded model and tokenizer
-            return _generate_response(prompt, model_instance, tokenizer, max_completion_tokens)
+            
+            return _generate_response(prompt, model_instance, tokenizer, max_completion_tokens, deepseek=deepseek)
+
             
         except Exception as e:
             print(f"Error loading model {model}: {e}")
@@ -253,7 +279,7 @@ def get_response(prompt, model, max_completion_tokens=200, tokenizer=None, pipe=
         # Use the provided model and tokenizer
         return _generate_response(prompt, model, tokenizer, max_completion_tokens)
 
-def _generate_response(prompt, model, tokenizer, max_completion_tokens):
+def _generate_response(prompt, model, tokenizer, max_completion_tokens, deepseek=False):
     """Helper function to generate a response with a loaded model and tokenizer"""
     import torch
     
