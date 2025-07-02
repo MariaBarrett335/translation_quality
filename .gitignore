@@ -2,3 +2,4 @@
 .logs
 notebooks/.ipynb_checkpoints
 */__pycache__/*
+data/output_wiki_minp-0-08_topp-1-0_temp-0-1.jsonl
