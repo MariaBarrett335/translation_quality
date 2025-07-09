@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """
 Process responses from JSONL file and run parallel inference for Danish fluency rating
-Vibe-coded with Claude 4
+It is vibe-coded with Claude 4
 
 How to run: 
 - Manually start a ray cluster with 4 nodes by following Rahuls instructions: https://docs.google.com/document/d/1EKJmGFTMBzW0RKmvTsueR7VIz9vU1dp3fPepHPL5D7A/edit?tab=t.0#heading=h.yg56rsdbfzwa 
-- In the docker container, start the script. These settings work well:
-python batched_script.py translation_quality/data/output_wiki_minp-0-08_topp-1-0_temp-0-1.jsonl output.jsonl --temperature 0.01 --max-concurrent 12 --max-tokens 1500 --responses-per-batch 5
- 
+- For each input row, it takes all list items in the responses column and splits the list in batches that fit the specificed size thresholds
+- In the docker container, start the script. These settings work well to begin with, then generation token/second slows down:
+python batched_script.py data/output_wiki_minp-0-08_topp-1-0_temp-0-1.jsonl output.jsonl --temperature 0.01 --max-concurrent 20 --responses-per-batch 5 --max-tokens 1000
+- Generation throughput drops rapidly from 100 tokens/s to > 10 tokens/s after an hour or so. Maybe due so some memory leakage. I have not solved this. I restart periodically (after 1-2 hours)
+- the VLLM KV cache builds up during use  - it goes faster if the output tokens are too long. With < 1000 it can run for a long time
+- With too big batches and long generation output, we run into OOM erros
+- Some prompts don't follow the expected format and the output is null. I use regex to parse the output. Todo: Improve output parsing robustness. 
 """
 
 import json
@@ -17,7 +21,8 @@ import re
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
-
+import gc
+import torch
 try:
     from vllm import LLM, SamplingParams
     from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -187,7 +192,7 @@ def create_rating_batches(responses: List[str], responses_per_batch: int = 10, m
                 responses_section += f"<id{response_id}>{response}</id{response_id}>\n"
             
             # Create complete prompt
-            complete_prompt = rating_instruction + responses_section + "\nProvide exactly one score (1-5) and brief rationale for each response:\n"
+            complete_prompt = rating_instruction + responses_section + "\nProvide exactly one score (1-5) and brief rationale (1-2 sentences) for each response:\n"
             for response_id in response_ids:
                 complete_prompt += f"<id{response_id}><score>[1-5]</score></id{response_id}>\n[Brief rationale]\n\n"
             
@@ -329,6 +334,19 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
         
         batch_time = time.time() - batch_start_time
         print(f"Completed batch {batch_id} in {batch_time:.1f}s: {len(scores)}/{len(expected_ids)} scores")
+        # In parse_rating_response() function, add at the top:
+        print(f"DEBUG: Raw response for batch {expected_ids}:")
+        print(response[:500])  # First 500 chars
+        print("="*50)
+
+        gc.collect()  # Python garbage collection
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, 'hip') and torch.hip.is_available():
+                torch.hip.empty_cache()
+        except:
+            pass
         
         return {
             'batch_id': batch_id,
@@ -355,12 +373,21 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
             with open(output_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(error_result, ensure_ascii=False) + '\n')
                 f.flush()
+        gc.collect()  # Python garbage collection
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, 'hip') and torch.hip.is_available():
+                torch.hip.empty_cache()
+        except:
+            pass
         
         return {
             'batch_id': batch_id,
             'scores_extracted': 0,
             'success': False
         }
+    
 
 async def run_inference(rating_batches: List[Dict[str, Any]], model_path: str, max_concurrent: int, 
                        output_file: str, force_fresh: bool) -> List[Dict[str, Any]]:
