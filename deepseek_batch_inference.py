@@ -13,7 +13,9 @@ This script processes JSONL input files through a large language model in parall
 ### Environment Setup
 1. **Install dependencies**: `pip install -r requirements.txt`
 2. **Ray cluster**: Manually start a Ray cluster with 4 nodes following [Rahul's setup guide](https://docs.google.com/document/d/1EKJmGFTMBzW0RKmvTsueR7VIz9vU1dp3fPepHPL5D7A/edit?tab=t.0#heading=h.yg56rsdbfzwa)
-3. **Docker container**: Run the script inside the configured Docker environment
+2a. I run the nodes in four tmux sessions
+2b. Rahul's run_cluster.sh is already in the repo with the addition that it mounts the current directory to the docker container
+3. **Docker container**: Run the script inside the configured Docker environment on the head node:
 
 ### Required Files
 - **Input file**: JSONL format with configurable column names (default: `prompt` and `id`)
