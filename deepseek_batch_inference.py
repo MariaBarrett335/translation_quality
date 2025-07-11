@@ -48,6 +48,8 @@ python deepseek_batch_inference.py \
     -- max-tokens This parameter serves as a fallback to items-per-batch and estimates token count from the batch prompt + items-per-batch and splits up the batch if it is too long. Max-tokens above 1500 seems to build up the GPU KV cache
 - This script is coded in collaboration with Claude 4
 """
+#!/usr/bin/env python3
+#!/usr/bin/env python3
 
 import json
 import argparse
@@ -65,6 +67,14 @@ from vllm.utils import random_uuid
 from bs4 import BeautifulSoup
 
 import time
+
+# Global debug flag
+DEBUG = False
+
+def debug_print(*args, **kwargs):
+    """Print debug messages only if DEBUG flag is enabled"""
+    if DEBUG:
+        print("[DEBUG]", *args, **kwargs)
 
 def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
     """Load data from JSONL file"""
@@ -149,11 +159,11 @@ def create_task_batches(items: List[Tuple[str, str]], general_prompt: str,
         for item_id, prompt_text in batch_items:
             estimated_tokens += len(f"<id1-1>{prompt_text}</id1-1>\n") // 4 + 50
         
-        print(f"DEBUG: Batch {global_batch_counter} token estimation:")
-        print(f"  Instruction tokens: {instruction_tokens}")
-        print(f"  Estimated total tokens: {estimated_tokens}")
-        print(f"  Max tokens allowed: {max_tokens}")
-        print(f"  Items in batch: {len(batch_items)}")
+        debug_print(f"Batch {global_batch_counter} token estimation:")
+        debug_print(f"  Instruction tokens: {instruction_tokens}")
+        debug_print(f"  Estimated total tokens: {estimated_tokens}")
+        debug_print(f"  Max tokens allowed: {max_tokens}")
+        debug_print(f"  Items in batch: {len(batch_items)}")
         
         # Split if too long
         if estimated_tokens > max_tokens:
@@ -239,149 +249,128 @@ async def initialize_model(model_path: str, tensor_parallel_size: int = 8, pipel
     )
     return AsyncLLMEngine.from_engine_args(engine_args)
 
-
-
 def parse_task_response_regex(response: str, expected_ids: List[str]) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Fallback regex parsing if BS4 fails - parse o and reason separately"""
+    """Regex parsing fallback - robust pattern matching"""
     outputs = {}
     reasons = {}
     
-    print(f"DEBUG: Using regex fallback for IDs: {expected_ids}")
+    debug_print(f"Using regex parsing for IDs: {expected_ids}")
     
     for expected_id in expected_ids:
-        print(f"DEBUG: Looking for {expected_id} with regex")
+        debug_print(f"Regex looking for ID: {expected_id}")
         
-        # First, try to find the complete structure
-        full_pattern = rf'<{re.escape(expected_id)}>.*?</{re.escape(expected_id)}>'
-        full_match = re.search(full_pattern, response, re.DOTALL | re.IGNORECASE)
+        # Primary pattern: <id91><o>2</o><reason>text</reason></id91>
+        pattern = rf'<id{re.escape(expected_id)}><o>([^<]+)</o><reason>(.*?)</reason></id{re.escape(expected_id)}>'
+        match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
         
-        if full_match:
-            content = full_match.group(0)
-            print(f"DEBUG: Found full content for {expected_id}: {content}")
+        if match:
+            output_text = match.group(1).strip()
+            reason_text = match.group(2).strip()
             
-            # Try to extract output (o, score, or output tags)
-            output_patterns = [
-                r'<o>([^<]+)</o>',
-                r'<score>([^<]+)</score>',
-                r'<output>([^<]+)</output>'
+            outputs[expected_id] = output_text
+            # Clean up reason if too long
+            if len(reason_text) > 500:
+                reason_text = reason_text[:500] + "..."
+            reasons[expected_id] = reason_text
+            
+            debug_print(f"Regex matched for {expected_id}: output='{output_text}', reason='{reason_text[:50]}...'")
+        else:
+            debug_print(f"Primary regex failed for {expected_id}, trying alternative patterns")
+            
+            # Alternative patterns
+            alt_patterns = [
+                # Just the ID block without closing tag
+                rf'<id{re.escape(expected_id)}><o>([^<]+)</o><reason>(.*?)(?=<id\d+>|$)',
+                # Loose pattern with any content between tags
+                rf'<id{re.escape(expected_id)}>.*?<o>([^<]+)</o>.*?<reason>(.*?)(?:</reason>|(?=<id\d+>)|$)',
+                # Very loose - just find score near the ID
+                rf'id{re.escape(expected_id)}[^0-9]*?([1-5])',
             ]
             
-            output_found = False
-            for pattern in output_patterns:
-                output_match = re.search(pattern, content, re.IGNORECASE)
-                if output_match:
-                    outputs[expected_id] = output_match.group(1).strip()
-                    output_found = True
-                    print(f"DEBUG: Found output for {expected_id}: '{output_match.group(1).strip()}'")
+            found = False
+            for i, alt_pattern in enumerate(alt_patterns):
+                alt_match = re.search(alt_pattern, response, re.DOTALL | re.IGNORECASE)
+                if alt_match:
+                    debug_print(f"Alternative pattern {i+1} matched for {expected_id}")
+                    
+                    if i < 2:  # Patterns with both output and reason
+                        outputs[expected_id] = alt_match.group(1).strip()
+                        reason_text = alt_match.group(2).strip()
+                        if len(reason_text) > 500:
+                            reason_text = reason_text[:500] + "..."
+                        reasons[expected_id] = reason_text
+                        debug_print(f"Alt pattern {i+1} - output: '{alt_match.group(1)}', reason: '{reason_text[:50]}...'")
+                    else:  # Pattern with just score
+                        outputs[expected_id] = alt_match.group(1).strip()
+                        reasons[expected_id] = "Extracted from loose pattern"
+                        debug_print(f"Alt pattern {i+1} - output: '{alt_match.group(1)}'")
+                    
+                    found = True
                     break
             
-            # Try to extract reason
-            reason_match = re.search(r'<reason>([^<]+)</reason>', content, re.IGNORECASE)
-            if reason_match:
-                reason_text = reason_match.group(1).strip()
-                if len(reason_text) > 200:
-                    reason_text = reason_text[:200] + "..."
-                reasons[expected_id] = reason_text
-                print(f"DEBUG: Found reason for {expected_id}: '{reason_text[:50]}...'")
-            elif output_found:
-                reasons[expected_id] = "No reason provided"
-            
-            # If no output found yet, try to extract from content
-            if not output_found:
-                # Remove the ID tags to get inner content
-                inner_content = re.sub(rf'</?{re.escape(expected_id)}>', '', content).strip()
-                score_match = re.search(r'\b([1-5])\b', inner_content)
-                if score_match:
-                    outputs[expected_id] = score_match.group(1)
-                    reasons[expected_id] = inner_content
-                    print(f"DEBUG: Extracted score from inner content for {expected_id}: '{score_match.group(1)}'")
-                elif inner_content:
-                    outputs[expected_id] = inner_content[:50]
-                    reasons[expected_id] = inner_content
-                    print(f"DEBUG: Used inner content for {expected_id}: '{inner_content[:50]}'")
-        else:
-            print(f"DEBUG: No content found for {expected_id}")
+            if not found:
+                debug_print(f"No regex pattern matched for {expected_id}")
     
+    debug_print(f"Regex parsing results - outputs: {outputs}, reasons: {reasons}")
     return outputs, reasons
 
 def parse_task_response(response: str, expected_ids: List[str]) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Parse task response using BeautifulSoup - expects format like your original script"""
+    """Parse task response using BeautifulSoup as primary, regex as fallback"""
     outputs = {}
     reasons = {}
     
-    print(f"DEBUG: Parsing response with BS4 for IDs: {expected_ids}")
-    print(f"DEBUG: Response to parse: {repr(response[:200])}...")
+    debug_print(f"Parsing response with BeautifulSoup for IDs: {expected_ids}")
+    debug_print(f"Response to parse: {repr(response[:200])}...")
     
+    # Try BeautifulSoup first
     try:
         # Wrap in root element to make valid XML
         xml_content = f"<root>{response}</root>"
         soup = BeautifulSoup(xml_content, 'xml')
         
         for expected_id in expected_ids:
-            print(f"DEBUG: Looking for ID: id{expected_id}")
+            debug_print(f"Looking for ID: {expected_id}")
             
-            # Find the tag with this ID using find() with tag name
+            # Find the tag with this ID
             id_tag = soup.find(f"id{expected_id}")
             if id_tag:
-                print(f"DEBUG: Found tag for id{expected_id}: {id_tag}")
+                debug_print(f"Found BeautifulSoup tag for id{expected_id}: {id_tag}")
                 
-                # Look for output first - try multiple tag names
-                output_tag = id_tag.find('o') or id_tag.find('score') or id_tag.find('output')
-                
+                # Look for output tag
+                output_tag = id_tag.find('o')
                 if output_tag:
                     output_text = output_tag.get_text().strip()
                     outputs[expected_id] = output_text
-                    print(f"DEBUG: Found output for {expected_id}: '{output_text}'")
-                else:
-                    print(f"DEBUG: No output tag found for {expected_id}")
+                    debug_print(f"BeautifulSoup found output for {expected_id}: '{output_text}'")
                 
-                # Look for reason separately - it's optional
+                # Look for reason tag
                 reason_tag = id_tag.find('reason')
                 if reason_tag:
                     reason_text = reason_tag.get_text().strip()
                     # Clean up reason if too long
-                    if len(reason_text) > 200:
-                        reason_text = reason_text[:200] + "..."
+                    if len(reason_text) > 500:
+                        reason_text = reason_text[:500] + "..."
                     reasons[expected_id] = reason_text
-                    print(f"DEBUG: Found reason for {expected_id}: '{reason_text[:50]}...'")
-                else:
-                    # If no reason tag, set default
-                    if expected_id in outputs:
-                        reasons[expected_id] = "No reason provided"
-                    else:
-                        # Try to extract from full content
-                        content = id_tag.get_text().strip()
-                        if content:
-                            # Try to extract score from content
-                            score_match = re.search(r'\b([1-5])\b', content)
-                            if score_match:
-                                outputs[expected_id] = score_match.group(1)
-                                reasons[expected_id] = content
-                                print(f"DEBUG: Extracted score from content for {expected_id}: '{score_match.group(1)}'")
+                    debug_print(f"BeautifulSoup found reason for {expected_id}: '{reason_text[:50]}...'")
+                elif expected_id in outputs:
+                    reasons[expected_id] = "No reason provided"
             else:
-                print(f"DEBUG: No tag found for id{expected_id}, trying alternative methods")
-                
-                # Alternative: Find by tag name using CSS selector or regex
-                # Try regex as backup
-                pattern = rf'<id{re.escape(expected_id)}><o>([^<]+)</o><reason>([^<]+)</reason></id{re.escape(expected_id)}>'
-                match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
-                if match:
-                    outputs[expected_id] = match.group(1).strip()
-                    reason_text = match.group(2).strip()
-                    if len(reason_text) > 200:
-                        reason_text = reason_text[:200] + "..."
-                    reasons[expected_id] = reason_text
-                    print(f"DEBUG: Regex found for {expected_id}: output='{match.group(1)}', reason='{reason_text[:50]}...'")
-                else:
-                    print(f"DEBUG: No regex match for id{expected_id}")
-                
+                debug_print(f"BeautifulSoup: No tag found for id{expected_id}")
+        
+        # If BeautifulSoup got all expected IDs, return
+        if len(outputs) == len(expected_ids):
+            debug_print(f"BeautifulSoup successfully parsed all {len(expected_ids)} IDs")
+            return outputs, reasons
+        else:
+            debug_print(f"BeautifulSoup only found {len(outputs)}/{len(expected_ids)} IDs, falling back to regex")
+            
     except Exception as e:
-        print(f"DEBUG: BS4 parsing failed: {e}")
-        print(f"DEBUG: Falling back to regex parsing")
-        return parse_task_response_regex(response, expected_ids)
+        debug_print(f"BeautifulSoup parsing failed: {e}")
+        debug_print("Falling back to regex parsing")
     
-    print(f"DEBUG: BS4 final results - outputs: {outputs}, reasons: {reasons}")
-    return outputs, reasons
+    # Fallback to regex parsing
+    debug_print("Using regex fallback parsing")
+    return parse_task_response_regex(response, expected_ids)
 
 async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, output_file: str, existing_ids: set) -> Dict[str, Any]:
     """Process a single batch and save results"""
@@ -392,10 +381,10 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
         print(f"Starting batch {batch_id}")
         
         # DEBUG: Print the complete prompt being sent to the model
-        print(f"DEBUG: Complete prompt being sent to model for batch {batch_id}:")
-        print("="*100)
-        print(batch_data['prompt'])
-        print("="*100)
+        debug_print(f"Complete prompt being sent to model for batch {batch_id}:")
+        debug_print("="*100)
+        debug_print(batch_data['prompt'])
+        debug_print("="*100)
         
         # Generate response with timeout
         request_id = random_uuid()
@@ -421,25 +410,25 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
         
         # Parse outputs and reasons
         expected_ids = batch_data['item_ids']
-        print(f"DEBUG: About to parse response for IDs: {expected_ids}")
+        debug_print(f"About to parse response for IDs: {expected_ids}")
         outputs, reasons = parse_task_response(response, expected_ids)
         
         # Enhanced debugging
-        print(f"DEBUG: Raw response for batch {batch_id}")
-        print(f"DEBUG: Expected IDs: {expected_ids}")
-        print(f"DEBUG: Full response:")
-        print(response)
-        print("="*80)
-        print(f"DEBUG: Parsed outputs: {outputs}")
-        print(f"DEBUG: Parsed reasons: {reasons}")
-        print("="*80)
+        debug_print(f"Raw response for batch {batch_id}")
+        debug_print(f"Expected IDs: {expected_ids}")
+        debug_print(f"Full response:")
+        debug_print(response)
+        debug_print("="*80)
+        debug_print(f"Parsed outputs: {outputs}")
+        debug_print(f"Parsed reasons: {reasons}")
+        debug_print("="*80)
 
         # Save results
         batch_success_count = 0
-        print(f"DEBUG: Attempting to save {len(expected_ids)} results to {output_file}")
+        debug_print(f"Attempting to save {len(expected_ids)} results to {output_file}")
         for i, item_id in enumerate(expected_ids):
             if item_id in existing_ids:
-                print(f"DEBUG: Skipping {item_id} - already exists")
+                debug_print(f"Skipping {item_id} - already exists")
                 continue
                 
             result = {
@@ -450,7 +439,7 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
                 'model_name': batch_data['model_name']
             }
             
-            print(f"DEBUG: Saving result for {item_id}: {result}")
+            debug_print(f"Saving result for {item_id}: {result}")
             
             with open(output_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(result, ensure_ascii=False) + '\n')
@@ -458,11 +447,11 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
             
             if result['output'] is not None:
                 batch_success_count += 1
-                print(f"DEBUG: Successfully saved {item_id} with output")
+                debug_print(f"Successfully saved {item_id} with output")
             else:
-                print(f"DEBUG: Saved {item_id} with NULL output")
+                debug_print(f"Saved {item_id} with NULL output")
         
-        print(f"DEBUG: Batch {batch_id} saved {batch_success_count} successful results out of {len(expected_ids)} total")
+        debug_print(f"Batch {batch_id} saved {batch_success_count} successful results out of {len(expected_ids)} total")
 
         batch_time = time.time() - batch_start_time
         print(f"Completed batch {batch_id} in {batch_time:.1f}s: {len(outputs)}/{len(expected_ids)} outputs")
@@ -567,7 +556,29 @@ async def run_inference(task_batches: List[Dict[str, Any]], model_path: str, max
     print(f"Completed in {time.time() - start_time:.2f} seconds")
     return results
 
+def test_parsing():
+    """Test function to verify parsing works with sample output"""
+    sample_response = """<id91><o>2</o><reason>Mixed Danish/English ("develop"). Grammar error in "dansk" (should be "dansk"). Basic vocabulary with direct translations.</reason></id91>
+<id92><o>2</o><reason>English words ("language", "improve") inserted. Awkward structure ("min dansk" should be "mit dansk"). Repetitive pattern.</reason></id92>
+<id93><o>2</o><reason>English verb "enjoy" used. Unnatural phrasing ("gå til koncerter"). Missing articles ("cultural events"). Non-Danish flow.</reason></id93>
+<id94><o>2</o><reason>English "support" instead of "støtter". Pluralization error ("decisions" should be "beslutninger"). Awkward word order.</reason></id94>
+<id95><o>3</o><reason>Mostly correct structure. Minor error in "learned" (Danish uses "lært"). Good attempt at cultural reference ("danske værdier"). Somewhat unnatural phrasing.</reason></id95>"""
+    
+    expected_ids = ['91', '92', '93', '94', '95']
+    outputs, reasons = parse_task_response(sample_response, expected_ids)
+    
+    print("=== PARSING TEST ===")
+    for id in expected_ids:
+        output = outputs.get(id, 'NOT_FOUND')
+        reason = reasons.get(id, 'NOT_FOUND')
+        print(f"ID {id}: output='{output}', reason='{reason[:50] if reason != 'NOT_FOUND' else reason}...'")
+    print("===================")
+    
+    return len(outputs) == len(expected_ids)
+
 def main():
+    global DEBUG
+    
     parser = argparse.ArgumentParser(description="General purpose task processing with VLLM")
     parser.add_argument("input_file", help="Input JSONL file")
     parser.add_argument("prompt_file", help="Markdown file containing the task prompt")
@@ -587,8 +598,23 @@ def main():
     parser.add_argument("--preview-only", action="store_true", help="Preview without running inference")
     parser.add_argument("--create-batch-file", action="store_true", help="Create batch file for inspection")
     parser.add_argument("--force-fresh", action="store_true", help="Force fresh start, ignore existing results")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    parser.add_argument("--test-parsing", action="store_true", help="Test parsing function and exit")
     
     args = parser.parse_args()
+    
+    # Set global debug flag
+    DEBUG = args.debug
+    
+    if DEBUG:
+        print("[DEBUG] Debug mode enabled")
+    
+    # Test parsing if requested
+    if args.test_parsing:
+        DEBUG = True  # Enable debug for test
+        success = test_parsing()
+        print(f"Parsing test {'PASSED' if success else 'FAILED'}")
+        return
     
     # Load data and prompt
     print(f"Loading data from {args.input_file}...")
