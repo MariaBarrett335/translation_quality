@@ -1,29 +1,50 @@
 #!/usr/bin/env python3
 """
-Process responses from JSONL file and run parallel inference for Danish fluency rating
-It is vibe-coded with Claude 4
+# DeepSeek Batch Inference Script
 
-How to run: 
-- Install requirements.txt
-- Manually start a ray cluster with 4 nodes by following Rahuls instructions: https://docs.google.com/document/d/1EKJmGFTMBzW0RKmvTsueR7VIz9vU1dp3fPepHPL5D7A/edit?tab=t.0#heading=h.yg56rsdbfzwa 
-- In the docker container, start the script. These settings work well to begin with, then generation token/second slows down
-- It takes: 
-    -- an input file with a prompt column (default: 'prompt') and an id colum (default: 'id')
-    -- an output file. If it already contains output, it will automatically resume and append to the file
-    -- a markdowm file with instructions and formating. See an example here: translation_quality/prompts/danish_fluency_prompt.md
-    The output parsing assumes the following format with a main output and a reason:
-    <id1><o>[main_output]</o><reason>[rationale]</reason></id1>
-    It uses BeautifulSoup to parse the output with fallback to regex but will return None in case the output format is not respected
+A Python script for running parallel batch inference on JSONL datasets using VLLM and DeepSeek models, with automatic resumption, intelligent batching, and robust output parsing.
 
-## To test the script:
-python deepseek_batch_inference.py data/input_test.jsonl prompts/danish_fluency_prompt.md output_test.jsonl \
-  --temperature 0.01 --max-concurrent 20 --items-per-batch 5 --max-tokens 1000 --prompt_col sentence
+## Overview
+
+This script processes JSONL input files through a large language model in parallel batches, designed specifically for tasks like Danish fluency rating but adaptable to any structured evaluation task. It includes memory management, automatic batch splitting, and dual parsing strategies for maximum reliability.
+
+## Prerequisites
+
+### Environment Setup
+1. **Install dependencies**: `pip install -r requirements.txt`
+2. **Ray cluster**: Manually start a Ray cluster with 4 nodes following [Rahul's setup guide](https://docs.google.com/document/d/1EKJmGFTMBzW0RKmvTsueR7VIz9vU1dp3fPepHPL5D7A/edit?tab=t.0#heading=h.yg56rsdbfzwa)
+3. **Docker container**: Run the script inside the configured Docker environment
+
+### Required Files
+- **Input file**: JSONL format with configurable column names (default: `prompt` and `id`)
+- **Prompt file**: Markdown file containing task instructions and formatting guidelines
+- **Output file**: JSONL file for results (supports automatic resumption)
+
+## Quick Start
+
+### Basic Usage
+```bash
+python deepseek_batch_inference.py \
+   data/input_test.jsonl \
+   prompts/danish_fluency_prompt.md \
+   output_test.jsonl \
+   --max-concurrent 20 \
+   --items-per-batch 5 \
+   --prompt_col sentence
+
 
 # Notes
-- Generation throughput drops rapidly from 100 tokens/s to > 10 tokens/s after an hour or so. Maybe due so some memory leakage. I have not solved this. I restart periodically (after 1-2 hours)
+- Generation throughput drops rapidly from 100 tokens/s to > 10 tokens/s after an hour or so with the settings above. Maybe due so some memory leakage. I have not solved this. I restart periodically (after 1-2 hours)
 - the VLLM KV cache builds up during use  - it goes faster if the output tokens are too long. With < 1000 it can run for a long time
 - With too big batches and long generation output, we run into OOM erros
 - Some prompts don't follow the expected format and the output is null. I use regex to parse the output. Todo: Improve output parsing robustness. 
+- The output parsing assumes the following format with a main output and a reason:
+    <id1><o>[main_output]</o><reason>[rationale]</reason></id1>
+- The script uses BeautifulSoup to parse the output with fallback to regex but will return None in case the output format is not respected
+- If batches are too long, the GPU KV cache builds up. There are two ways to ensure that this does not happen:
+    -- items-per-batch max items per batch. If it is too big, the token generation degrades faster
+    -- max-tokens This parameter serves as a fallback to items-per-batch and estimates token count from the batch prompt + items-per-batch and splits up the batch if it is too long. Max-tokens above 1500 seems to build up the GPU KV cache
+- This script is coded in collaboration with Claude 4
 """
 
 import json
@@ -552,12 +573,12 @@ def main():
     parser.add_argument("--prompt_col", default="prompt", help="Column name for input prompts")
     parser.add_argument("--id_col", default="id", help="Column name for IDs")
     parser.add_argument("--items-per-batch", type=int, default=5, help="Target items per batch (default: 5)")
-    parser.add_argument("--max-tokens", type=int, default=1000, help="Max tokens per batch (auto-split if exceeded) (default: 1000)")
+    parser.add_argument("--max-tokens", type=int, default=1500, help="Max tokens per batch (auto-split if exceeded) (default: 1500)")
     parser.add_argument("--top-n", type=int, help="Select only top N items")
     parser.add_argument("--model-path", default="/app/model", help="Path to model")
     parser.add_argument("--model-name", default="DeepSeek-V3", help="Model name for output")
     parser.add_argument("--max-concurrent", type=int, default=3, help="Max concurrent batches (default: 3)")
-    parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
+    parser.add_argument("--temperature", type=float, default=0.1, help="Sampling temperature")
     parser.add_argument("--top-p", type=float, default=0.95, help="Top-p sampling")
     parser.add_argument("--top-k", type=int, default=40, help="Top-k sampling")
     parser.add_argument("--max-generation-tokens", type=int, default=2048, help="Max generation tokens")

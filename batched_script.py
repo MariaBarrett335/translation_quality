@@ -12,6 +12,17 @@ python batched_script.py data/output_wiki_minp-0-08_topp-1-0_temp-0-1.jsonl outp
 - the VLLM KV cache builds up during use  - it goes faster if the output tokens are too long. With < 1000 it can run for a long time
 - With too big batches and long generation output, we run into OOM erros
 - Some prompts don't follow the expected format and the output is null. I use regex to parse the output. Todo: Improve output parsing robustness. 
+- If batches are too long, the GPU KV cache builds up. There are two ways to ensure that this does not happen:
+    -- items-per-batch max items per batch
+    -- max-tokens This parameter serves as a fallback to items-per-batch and estimates token count from the batch prompt + items-per-batch and splits up the batch if it is too long. Max-tokens above 1500 seems to build up the GPU KV cache
+
+Note
+- Generation throughput drops rapidly from 100 tokens/s (w 20 concurrent processes) to > 10 tokens/s after an hour or so. Maybe due so some memory leakage. I have not solved this. I restart periodically (after 1-2 hours)
+- the VLLM KV cache builds up during use  - it goes faster if the output tokens are too long. With < 1000 it can run for a long time
+- With too big batches and long generation output, we run into OOM erros
+- Some prompts don't follow the expected format and the output is null. I use regex to parse the output. Todo: Improve output parsing robustness. 
+- This script is coded in collaboration with Claude 4
+
 """
 
 import json
