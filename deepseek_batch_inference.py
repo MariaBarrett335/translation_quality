@@ -478,7 +478,7 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=1500, help="Max input tokens per batch including the batch prompt. It will clutter the GPU KV cache if too long")
     parser.add_argument("--top-n", type=int, help="Select only top N items")
     parser.add_argument("--model-path", default="/app/model", help="Path to model")
-    parser.add_argument("--model-name", default="DeepSeek-V3", help="Model name for output. Only a string. No functionality")
+    parser.add_argument("--model-name", default="DeepSeek-R1", help="Model name for output. Only a string. No functionality")
     parser.add_argument("--max-concurrent", type=int, default=20, help="Max concurrent batches")
     parser.add_argument("--temperature", type=float, default=0.1, help="Sampling temperature")
     parser.add_argument("--top-p", type=float, default=0.95, help="Top-p sampling")
