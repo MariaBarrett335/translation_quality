@@ -59,25 +59,38 @@ def load_jsonl(file_path: str) -> List[Dict[str, Any]]:
                     print(f"Warning: Invalid JSON on line {line_num}: {e}")
     return data
 
-def extract_responses(data: List[Dict[str, Any]]) -> List[str]:
-    """Extract non-empty responses from the data"""
-    all_responses = []
+def extract_responses_with_metadata(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract non-empty responses from the data with their original metadata"""
+    all_responses_with_metadata = []
+    
     for item in data:
         if 'responses' in item and isinstance(item['responses'], list):
+            # Extract the full original column and the paragraph
+            original_column = item.get('original', {})
+            original_paragraph = ''
+            if isinstance(original_column, dict):
+                original_paragraph = original_column.get('paragraph', '')
+            
             for response in item['responses']:
                 if response and response.strip():
-                    all_responses.append(response.strip())
+                    clean_response = response.strip()
+                    all_responses_with_metadata.append({
+                        'response': clean_response,
+                        'original_paragraph': original_paragraph,
+                        'original': original_column
+                    })
     
     # Deduplicate while preserving order
     seen = set()
     deduplicated = []
-    for response in all_responses:
+    for item in all_responses_with_metadata:
+        response = item['response']
         if response not in seen:
             seen.add(response)
-            deduplicated.append(response)
+            deduplicated.append(item)
     
-    if len(deduplicated) < len(all_responses):
-        removed = len(all_responses) - len(deduplicated)
+    if len(deduplicated) < len(all_responses_with_metadata):
+        removed = len(all_responses_with_metadata) - len(deduplicated)
         print(f"Removed {removed} duplicate responses ({len(deduplicated)} unique remaining)")
     
     return deduplicated
@@ -144,22 +157,23 @@ def get_rating_instruction() -> str:
 
 """
 
-def create_rating_batches(responses: List[str], responses_per_batch: int = 10, max_tokens: int = 2000) -> List[Dict[str, Any]]:
+def create_rating_batches(responses_with_metadata: List[Dict[str, Any]], responses_per_batch: int = 10, max_tokens: int = 2000) -> List[Dict[str, Any]]:
     """Create rating batches with automatic splitting when too long"""
     batches = []
     rating_instruction = get_rating_instruction()
     instruction_tokens = len(rating_instruction) // 4
     
-    print(f"Creating batches from {len(responses)} responses")
+    print(f"Creating batches from {len(responses_with_metadata)} responses")
     global_batch_counter = 1
     
-    for batch_start in range(0, len(responses), responses_per_batch):
-        batch_end = min(batch_start + responses_per_batch, len(responses))
-        batch_responses = responses[batch_start:batch_end]
+    for batch_start in range(0, len(responses_with_metadata), responses_per_batch):
+        batch_end = min(batch_start + responses_per_batch, len(responses_with_metadata))
+        batch_items = responses_with_metadata[batch_start:batch_end]
         
         # Check if batch needs splitting
         estimated_tokens = instruction_tokens
-        for response in batch_responses:
+        for item in batch_items:
+            response = item['response']
             estimated_tokens += len(f"<id1-1>{response}</id1-1>\n") // 4 + 50
         
         # Split if too long
@@ -171,7 +185,8 @@ def create_rating_batches(responses: List[str], responses_per_batch: int = 10, m
             current_chunk = []
             current_tokens = 0
             
-            for response in batch_responses:
+            for item in batch_items:
+                response = item['response']
                 response_tokens = len(f"<id1-1>{response}</id1-1>\n") // 4 + 50
                 
                 if current_tokens + response_tokens > available_tokens and current_chunk:
@@ -179,7 +194,7 @@ def create_rating_batches(responses: List[str], responses_per_batch: int = 10, m
                     current_chunk = []
                     current_tokens = 0
                 
-                current_chunk.append(response)
+                current_chunk.append(item)
                 current_tokens += response_tokens
             
             if current_chunk:
@@ -187,20 +202,27 @@ def create_rating_batches(responses: List[str], responses_per_batch: int = 10, m
             
             print(f"Split into {len(chunks)} sub-batches")
         else:
-            chunks = [batch_responses]
+            chunks = [batch_items]
         
         # Create batches for each chunk
-        for chunk_idx, chunk_responses in enumerate(chunks):
+        for chunk_idx, chunk_items in enumerate(chunks):
             batch_id = f"{global_batch_counter}" if len(chunks) == 1 else f"{global_batch_counter}-{chunk_idx + 1}"
             
             # Create response section with IDs
             responses_section = ""
             response_ids = []
+            responses_text = []
+            responses_metadata = []
             
-            for i, response in enumerate(chunk_responses):
+            for i, item in enumerate(chunk_items):
                 response_id = f"{batch_id}-{i + 1}"
                 response_ids.append(response_id)
-                responses_section += f"<id{response_id}>{response}</id{response_id}>\n"
+                responses_text.append(item['response'])
+                responses_metadata.append({
+                    'original_paragraph': item['original_paragraph'],
+                    'original': item['original']
+                })
+                responses_section += f"<id{response_id}>{item['response']}</id{response_id}>\n"
             
             # Create complete prompt
             complete_prompt = rating_instruction + responses_section + "\nProvide exactly one score (1-5) and brief rationale (1-2 sentences) for each response:\n"
@@ -213,7 +235,8 @@ def create_rating_batches(responses: List[str], responses_per_batch: int = 10, m
                 "batch_id": batch_id,
                 "prompt": complete_prompt,
                 "response_ids": response_ids,
-                "responses_text": chunk_responses,
+                "responses_text": responses_text,
+                "responses_metadata": responses_metadata,
                 "estimated_tokens": final_tokens,
                 "was_split": len(chunks) > 1
             })
@@ -290,7 +313,7 @@ def parse_rating_response(response: str, expected_ids: List[str]) -> Tuple[Dict[
     return scores, rationales
 
 async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, output_file: str, existing_ids: set) -> Dict[str, Any]:
-    """Process a single batch and save results"""
+    """Process a single batch and save results with original data"""
     batch_id = batch_data['batch_id']
     batch_start_time = time.time()
     
@@ -328,12 +351,18 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
         for i, response_id in enumerate(expected_ids):
             if response_id in existing_ids:
                 continue
-                
+            
+            sentence = batch_data['responses_text'][i]
+            metadata = batch_data['responses_metadata'][i]
+            
             result = {
                 'id': response_id,
-                'sentence': batch_data['responses_text'][i],
+                'sentence': sentence,
                 'fluency_score': scores.get(response_id, None),
-                'reason': rationales.get(response_id, "")
+                'reason': rationales.get(response_id, ""),
+                'original_paragraph': metadata['original_paragraph'],
+                'matched_response': sentence,
+                'original': metadata['original']
             }
             
             with open(output_file, 'a', encoding='utf-8') as f:
@@ -373,12 +402,18 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
         for i, response_id in enumerate(batch_data['response_ids']):
             if response_id in existing_ids:
                 continue
+            
+            sentence = batch_data['responses_text'][i]
+            metadata = batch_data['responses_metadata'][i]
                 
             error_result = {
                 'id': response_id,
-                'sentence': batch_data['responses_text'][i],
+                'sentence': sentence,
                 'fluency_score': None,
-                'reason': "Error during processing"
+                'reason': "Error during processing",
+                'original_paragraph': metadata['original_paragraph'],
+                'matched_response': sentence,
+                'original': metadata['original']
             }
             
             with open(output_file, 'a', encoding='utf-8') as f:
@@ -472,15 +507,15 @@ def main():
     # Load and extract responses
     print(f"Loading data from {args.input_file}...")
     data = load_jsonl(args.input_file)
-    responses = extract_responses(data)
-    print(f"Found {len(responses)} unique responses")
+    responses_with_metadata = extract_responses_with_metadata(data)
+    print(f"Found {len(responses_with_metadata)} unique responses")
     
     if args.top_n:
-        responses = responses[:args.top_n]
-        print(f"Selected top {len(responses)} responses")
+        responses_with_metadata = responses_with_metadata[:args.top_n]
+        print(f"Selected top {len(responses_with_metadata)} responses")
     
     # Create batches
-    rating_batches = create_rating_batches(responses, args.responses_per_batch, args.max_tokens)
+    rating_batches = create_rating_batches(responses_with_metadata, args.responses_per_batch, args.max_tokens)
     total_responses = sum(len(batch['response_ids']) for batch in rating_batches)
     auto_split_count = sum(1 for batch in rating_batches if batch.get('was_split', False))
     
