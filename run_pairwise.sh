@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1     # 8 MPI ranks per node, 128 total (16x8)
 #SBATCH --gpus-per-node=4
 #SBATCH --mem=256G 
-#SBATCH --time=04:00:00       # Run time (d-hh:mm:ss) # 4 hours for everything
+#SBATCH --time=20:00:00       # Run time (d-hh:mm:ss) # 4 hours for everything
 #SBATCH --account=project_462000615  # Project for billing
 
 module use /appl/local/csc/modulefiles/
@@ -35,8 +35,11 @@ OUTPUT_DIR="results"
 mkdir -p $OUTPUT_DIR
 
 MODELS=("/scratch/project_462000353/zosaelai2/models/viking-33b-synthetic-magpie-oasst2-epochs-2-batch-128-packed" "google/gemma-3-27b-it" "meta-llama/Llama-3.3-70B-Instruct" "utter-project/EuroLLM-9B-Instruct")
+MODELS=("/scratch/project_462000353/zosaelai2/models/viking-33b-synthetic-magpie-oasst2-epochs-2-batch-128-packed" "google/gemma-3-27b-it")
+#MODELS=("meta-llama/Llama-3.3-70B-Instruct")
+
 INPUT_FILE="/scratch/project_462000353/maribarr/translation_quality/data/Flores200_dev.csv"
-TASK="edit" # rank_vs_edited edit score
+TASK="score" # rank_vs_edited edit score internal_ranking
 COT="False"
 
 

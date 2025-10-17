@@ -33,8 +33,9 @@ from collections import Counter
 from scipy.stats import rankdata
 import itertools
 from openai import OpenAI
+import ast
 
-def openai_get_response(prompt, model, max_completion_tokens=1000, api_key=None):
+def openai_get_response(prompt, model, max_completion_tokens=1000, api_key=None, temperature=0.1):
     client = OpenAI(
       base_url="https://openrouter.ai/api/v1",
       api_key=api_key)
@@ -46,6 +47,7 @@ def openai_get_response(prompt, model, max_completion_tokens=1000, api_key=None)
       },
       extra_body={},
       model=model,
+      temperature=temperature,
       messages=[
         {
           "role": "user",
@@ -116,6 +118,14 @@ def create_ranking_prompt(candidate_A:str, candidate_B:str, cot=False):
         return prompt
     else: 
         return prompt_cot
+    
+def extract_dict_from_code_block(text):
+    # Remove code fence markers and language identifier
+    clean_text = text.replace('```python', '').replace('```', '')
+    # Strip any leading/trailing whitespace
+    clean_text = clean_text.strip()
+    # Use ast.literal_eval to safely convert the string to a dictionary
+    return ast.literal_eval(clean_text)
 
 def compare_sentences_by_quality(df, id_column, sentence_column, score_column, model, tokenizer=None, cot=False, 
                                rating_prompt_func=create_ranking_prompt, save_path=None, pipe=None):
@@ -229,7 +239,7 @@ def scores_to_ranks_dict(scores):
     rank_dict = {score: int(rank) for rank, score in enumerate(unique_scores, 1)}
     return rank_dict
 
-def get_response(prompt, model, max_completion_tokens=200, tokenizer=None, pipe=None, deepseek=False):
+def get_response(prompt, model, max_completion_tokens=200, tokenizer=None, pipe=None, temperature=0.1):
     """
     Get response from a model that is not GPT or Gemini (typically HuggingFace models).
     
@@ -264,7 +274,7 @@ def get_response(prompt, model, max_completion_tokens=200, tokenizer=None, pipe=
             
             # Now we can use the newly loaded model and tokenizer
             
-            return _generate_response(prompt, model_instance, tokenizer, max_completion_tokens, deepseek=deepseek)
+            return _generate_response(prompt, model_instance, tokenizer, max_completion_tokens, temperature=temperature)
 
             
         except Exception as e:
@@ -279,7 +289,7 @@ def get_response(prompt, model, max_completion_tokens=200, tokenizer=None, pipe=
         # Use the provided model and tokenizer
         return _generate_response(prompt, model, tokenizer, max_completion_tokens)
 
-def _generate_response(prompt, model, tokenizer, max_completion_tokens, deepseek=False):
+def _generate_response(prompt, model, tokenizer, max_completion_tokens, temperature=0.1):
     """Helper function to generate a response with a loaded model and tokenizer"""
     import torch
     
@@ -311,7 +321,7 @@ def _generate_response(prompt, model, tokenizer, max_completion_tokens, deepseek
             **inputs,
             max_new_tokens=max_completion_tokens,
             do_sample=True,
-            temperature=0.1
+            temperature=temperature
         )
     
     # Decode the response, skipping the prompt
@@ -412,7 +422,7 @@ def create_edit_prompt(translation, cot=False):
     return prompt
     
 
-def call_litellm(prompt, model="huggingface/meta-llama/Meta-Llama-3.1-8B-Instruct", max_completion_tokens=200):
+def call_litellm(prompt, model="huggingface/meta-llama/Meta-Llama-3.1-8B-Instruct", max_completion_tokens=200, temperature=0.1):
     try:
         response = completion(
             model=model,
@@ -426,7 +436,7 @@ def call_litellm(prompt, model="huggingface/meta-llama/Meta-Llama-3.1-8B-Instruc
                 ],
             stream=False,
             max_completion_tokens=max_completion_tokens,
-            temperature=0.1
+            temperature=temperature
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -448,14 +458,14 @@ def create_minimal_rating_prompt(candidate_A:str, candidate_B:str):
     return prompt
 
 
-def gemini_chat(prompt: str, model="gemini/gemini-2.0-flash", max_completion_tokens=200) -> str:
+def gemini_chat(prompt: str, model="gemini/gemini-2.0-flash", max_completion_tokens=200, temperature=0.1) -> str:
   """
   Generate a response from the model based on a given prompt.
   """
   response = completion(
     model=model, 
     messages=[{"role": "user", "content": prompt}],
-    temperature=0.1,
+    temperature=temperature,
     max_completion_tokens=max_completion_tokens
   )
   if response and response.choices:
