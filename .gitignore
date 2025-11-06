@@ -7,3 +7,6 @@ afo_tune_device_*
 inference.log
 output.jsonl
 output/*
+run_pairwise_fluency_eval.sh
+.venv/*
+.handbook_venv/
