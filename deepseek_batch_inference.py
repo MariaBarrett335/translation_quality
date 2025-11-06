@@ -1,54 +1,7 @@
 #!/usr/bin/env python3
 """
-# DeepSeek Batch Inference Script
-
-A Python script for running parallel batch inference on JSONL datasets using VLLM and DeepSeek models, with automatic resumption, intelligent batching, and robust output parsing.
-
-## Overview
-
-This script processes JSONL input files through a large language model in parallel batches, designed specifically for tasks like Danish fluency rating but adaptable to any structured evaluation task. It includes memory management, automatic batch splitting, and dual parsing strategies for maximum reliability.
-
-## Prerequisites
-
-### Environment Setup
-1. **Install dependencies**: `pip install -r requirements.txt`
-2. **Ray cluster**: Manually start a Ray cluster with 4 nodes following [Rahul's setup guide](https://docs.google.com/document/d/1EKJmGFTMBzW0RKmvTsueR7VIz9vU1dp3fPepHPL5D7A/edit?tab=t.0#heading=h.yg56rsdbfzwa)
-2a. I run the nodes in four tmux sessions
-2b. Rahul's run_cluster.sh is already in the repo with the addition that it mounts the current directory to the docker container
-3. **Docker container**: Run the script inside the configured Docker environment on the head node:
-
-### Required Files
-- **Input file**: JSONL format with configurable column names (default: `prompt` and `id`)
-- **Prompt file**: Markdown file containing task instructions and formatting guidelines
-- **Output file**: JSONL file for results (supports automatic resumption)
-
-## Quick Start
-
-### Basic Usage
-```bash
-python deepseek_batch_inference.py \
-   data/input_test.jsonl \
-   prompts/danish_fluency_prompt.md \
-   output_test.jsonl \
-   --max-concurrent 20 \
-   --items-per-batch 5 \
-   --prompt_col sentence
-
-
-# Notes
-- Generation throughput drops rapidly from 100 tokens/s to > 10 tokens/s after an hour or so with the settings above. Maybe due so some memory leakage. I have not solved this. I restart periodically (after 1-2 hours)
-- the VLLM KV cache builds up during use  - it goes faster if the output tokens are too long. With < 1000 it can run for a long time
-- With too big batches and long generation output, we run into OOM erros
-- Some prompts don't follow the expected format and the output is null. I use regex to parse the output. Todo: Improve output parsing robustness. 
-- The output parsing assumes the following format with a main output and a reason:
-    <id1><o>[main_output]</o><reason>[rationale]</reason></id1>
-- The script uses BeautifulSoup to parse the output with fallback to regex but will return None in case the output format is not respected
-- If batches are too long, the GPU KV cache builds up. There are two ways to ensure that this does not happen:
-    -- items-per-batch max items per batch. If it is too big, the token generation degrades faster
-    -- max-tokens This parameter serves as a fallback to items-per-batch and estimates token count from the batch prompt + items-per-batch and splits up the batch if it is too long. Max-tokens above 1500 seems to build up the GPU KV cache
-- This script is coded in collaboration with Claude 4
+Fixed version of deepseek_batch_inference.py that handles string IDs like "3304-3-2"
 """
-#!/usr/bin/env python3
 
 import json
 import argparse
@@ -132,6 +85,10 @@ def load_existing_results(output_file: str) -> set:
         print(f"Found {len(existing_ids)} existing results - will resume")
     return existing_ids
 
+def sanitize_id_for_xml(item_id: str) -> str:
+    """Convert ID to be XML-tag safe by replacing hyphens with underscores"""
+    return str(item_id).replace('-', '_').replace('.', '_')
+
 def create_task_batches(items: List[Tuple[str, str]], general_prompt: str, 
                        items_per_batch: int = 10, max_tokens: int = 2000, 
                        model_name: str = "unknown") -> List[Dict[str, Any]]:
@@ -187,17 +144,20 @@ def create_task_batches(items: List[Tuple[str, str]], general_prompt: str,
             items_section = ""
             item_ids = []
             item_texts = []
+            original_ids = []  # Store original IDs for output
             
             for i, (item_id, prompt_text) in enumerate(chunk_items):
-                simple_id = str(int(item_id))
-                item_ids.append(simple_id)
+                # Sanitize ID for XML tag names
+                safe_id = sanitize_id_for_xml(item_id)
+                item_ids.append(safe_id)
+                original_ids.append(item_id)  # Keep original for output
                 item_texts.append(prompt_text)
-                items_section += f"<id{simple_id}>{prompt_text}</id{simple_id}>\n"
+                items_section += f"<id{safe_id}>{prompt_text}</id{safe_id}>\n"
             
             # Create complete prompt with explicit format instructions
             format_instructions = "\nProvide exactly one score and brief rationale for each item:\n"
-            for simple_id in item_ids:
-                format_instructions += f"<id{simple_id}><o>[score]</o><reason>[rationale]</reason></id{simple_id}>\n"
+            for safe_id in item_ids:
+                format_instructions += f"<id{safe_id}><o>[score]</o><reason>[rationale]</reason></id{safe_id}>\n"
             
             complete_prompt = general_prompt + "\n\n" + items_section + format_instructions
             final_tokens = len(complete_prompt) // 4
@@ -205,7 +165,8 @@ def create_task_batches(items: List[Tuple[str, str]], general_prompt: str,
             batches.append({
                 "batch_id": batch_id,
                 "prompt": complete_prompt,
-                "item_ids": item_ids,
+                "item_ids": item_ids,  # Sanitized IDs for parsing
+                "original_ids": original_ids,  # Original IDs for output
                 "item_texts": item_texts,
                 "estimated_tokens": final_tokens,
                 "was_split": len(chunks) > 1,
@@ -326,23 +287,25 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
         except (asyncio.TimeoutError, asyncio.exceptions.TimeoutError):
             raise Exception(f"Batch timeout after 1800s")
         
-        # Parse outputs and reasons
+        # Parse outputs and reasons (using sanitized IDs)
         expected_ids = batch_data['item_ids']
         outputs, reasons = parse_task_response(response, expected_ids)
         
         debug_print(f"Parsed {len(outputs)}/{len(expected_ids)} outputs")
 
-        # Save results
+        # Save results (using original IDs)
         batch_success_count = 0
-        for i, item_id in enumerate(expected_ids):
-            if item_id in existing_ids:
+        for i, safe_id in enumerate(expected_ids):
+            original_id = batch_data['original_ids'][i]
+            
+            if original_id in existing_ids:
                 continue
                 
             result = {
-                'id': item_id,
+                'id': original_id,  # Use original ID in output
                 'input': batch_data['item_texts'][i],
-                'output': outputs.get(item_id, None),
-                'reason': reasons.get(item_id, ""),
+                'output': outputs.get(safe_id, None),
+                'reason': reasons.get(safe_id, ""),
                 'model_name': batch_data['model_name']
             }
             
@@ -376,13 +339,15 @@ async def process_batch(engine, batch_data: Dict[str, Any], sampling_params, out
         batch_time = time.time() - batch_start_time
         print(f"ERROR: Batch {batch_id} failed after {batch_time:.1f}s: {e}")
         
-        # Save error entries
-        for i, item_id in enumerate(batch_data['item_ids']):
-            if item_id in existing_ids:
+        # Save error entries (using original IDs)
+        for i, safe_id in enumerate(batch_data['item_ids']):
+            original_id = batch_data['original_ids'][i]
+            
+            if original_id in existing_ids:
                 continue
                 
             error_result = {
-                'id': item_id,
+                'id': original_id,
                 'input': batch_data['item_texts'][i],
                 'output': None,
                 'reason': "Error during processing",
@@ -414,7 +379,7 @@ async def run_inference(task_batches: List[Dict[str, Any]], model_path: str, max
     
     # Filter batches to process
     def should_process_batch(batch_data):
-        return not existing_ids or any(rid not in existing_ids for rid in batch_data['item_ids'])
+        return not existing_ids or any(orig_id not in existing_ids for orig_id in batch_data['original_ids'])
     
     batches_to_process = [batch for batch in task_batches if should_process_batch(batch)]
     
@@ -553,7 +518,10 @@ def main():
     print(f"\n{'='*50}")
     print("FINAL RESULTS")
     print(f"{'='*50}")
-    print(f"Successfully processed: {total_outputs}/{total_processed} items ({total_outputs/total_processed*100:.1f}%)")
+    if total_processed > 0:
+        print(f"Successfully processed: {total_outputs}/{total_processed} items ({total_outputs/total_processed*100:.1f}%)")
+    else:
+        print("No items to process")
     print(f"Results saved to: {args.output_file}")
 
 if __name__ == "__main__":
